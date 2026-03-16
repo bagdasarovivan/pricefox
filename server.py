@@ -184,6 +184,133 @@ async def parse_yandex_market(query: str, client: httpx.AsyncClient):
         return []
 
 
+async def parse_aliexpress(query: str, client: httpx.AsyncClient):
+    """Парсим AliExpress"""
+    try:
+        url = "https://www.aliexpress.com/ajax/search.htm"
+        params = {
+            "SearchText": query,
+            "SortType": "default",
+            "CatId": 0,
+            "page": 1,
+        }
+        headers = {
+            **HEADERS,
+            "Referer": "https://www.aliexpress.com",
+        }
+        resp = await client.get(url, params=params, headers=headers, timeout=10)
+        data = resp.json()
+
+        results = []
+        items = data.get("mods", {}).get("itemList", {}).get("content", [])
+
+        for item in items[:3]:
+            price_info = item.get("prices", {})
+            price_str = price_info.get("salePrice", {}).get("minPrice", "0")
+            try:
+                price = int(float(str(price_str).replace(",", ".")) * 90)  # USD to RUB примерно
+            except:
+                price = 0
+
+            results.append({
+                "platform": "ali",
+                "name": item.get("title", {}).get("displayTitle", ""),
+                "price": price,
+                "oldPrice": None,
+                "rating": item.get("evaluation", {}).get("starRating", 0),
+                "reviews": item.get("evaluation", {}).get("totalValidNum", 0),
+                "delivery": "15-30 дней",
+                "url": "https:" + item.get("productDetailUrl", "//aliexpress.com")
+            })
+        return results
+
+    except Exception as e:
+        print(f"AliExpress error: {e}")
+        return []
+
+
+async def parse_avito(query: str, client: httpx.AsyncClient):
+    """Парсим Авито"""
+    try:
+        url = "https://www.avito.ru/api/11/items"
+        params = {
+            "query": query,
+            "locationId": 637640,  # Россия
+            "limit": 5,
+            "offset": 0,
+        }
+        headers = {
+            **HEADERS,
+            "Authorization": "Bearer v.1.avito.public",
+        }
+        resp = await client.get(url, params=params, headers=headers, timeout=10)
+        data = resp.json()
+
+        results = []
+        items = data.get("items", []) or []
+
+        for item in items[:3]:
+            price = item.get("price", {}).get("value", {}).get("raw", 0)
+            results.append({
+                "platform": "avito",
+                "name": item.get("title", ""),
+                "price": int(price) if price else 0,
+                "oldPrice": None,
+                "rating": 0,
+                "reviews": 0,
+                "delivery": "Самовывоз/доставка",
+                "url": "https://avito.ru" + item.get("urlPath", "")
+            })
+        return results
+
+    except Exception as e:
+        print(f"Avito error: {e}")
+        return []
+
+
+async def parse_megamarket(query: str, client: httpx.AsyncClient):
+    """Парсим Мегамаркет (СберМегаМаркет)"""
+    try:
+        url = "https://megamarket.ru/api/mobile/v1/catalogService/catalog/search"
+        payload = {
+            "requestVersion": 10,
+            "text": query,
+            "limit": 5,
+            "offset": 0,
+            "sorting": 1,
+        }
+        headers = {
+            **HEADERS,
+            "Content-Type": "application/json",
+        }
+        resp = await client.post(url, json=payload, headers=headers, timeout=10)
+        data = resp.json()
+
+        results = []
+        items = data.get("items", []) or []
+
+        for item in items[:3]:
+            price = item.get("salePriceU", 0) // 100 if item.get("salePriceU") else item.get("finalPrice", 0)
+            old_price = item.get("regularPriceU", 0) // 100 if item.get("regularPriceU") else 0
+            goods_id = item.get("goodsId", "")
+
+            results.append({
+                "platform": "mega",
+                "name": item.get("name", ""),
+                "price": int(price) if price else 0,
+                "oldPrice": int(old_price) if old_price and old_price > price else None,
+                "rating": item.get("rating", 0),
+                "reviews": item.get("reviewsCount", 0),
+                "delivery": "1-3 дня",
+                "url": f"https://megamarket.ru/catalog/details/{goods_id}/"
+            })
+        return results
+
+    except Exception as e:
+        print(f"Megamarket error: {e}")
+        return []
+
+
 @app.get("/search")
 async def search(q: str, platforms: str = "wb,ozon,ym"):
     """Главный эндпоинт поиска"""
@@ -198,6 +325,12 @@ async def search(q: str, platforms: str = "wb,ozon,ym"):
             tasks.append(parse_ozon(q, client))
         if "ym" in platform_list:
             tasks.append(parse_yandex_market(q, client))
+        if "ali" in platform_list:
+            tasks.append(parse_aliexpress(q, client))
+        if "avito" in platform_list:
+            tasks.append(parse_avito(q, client))
+        if "mega" in platform_list:
+            tasks.append(parse_megamarket(q, client))
 
         all_results = await asyncio.gather(*tasks, return_exceptions=True)
 
